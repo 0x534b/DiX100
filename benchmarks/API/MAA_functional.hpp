@@ -589,6 +589,27 @@ inline void maa_indirect_load(T1 *data, int idx_tile, int dst_tile, int cond_til
     set_tile_ready(dst_tile, 1);
 }
 template <class T1>
+inline void maa_indirect_load_rep(T1 *data, int tc_tile, int ts1_tile) {
+    static_assert(sizeof(T1) == sizeof(uint64_t), "maa_indirect_load_rep requires 64-bit elements");
+    uint64_t *values = get_cacheable_tile_pointer<uint64_t>(ts1_tile);
+    uint32_t *counts = get_cacheable_tile_pointer<uint32_t>(tc_tile);
+    int value_size = get_tile_size(ts1_tile);
+    int count_size = get_tile_size(tc_tile);
+    assert(value_size == count_size);
+    int8_t region = get_region(data);
+    for (int idx = 0; idx < value_size; idx++) {
+        uint64_t current = values[idx];
+        for (uint32_t depth = 0; depth < counts[idx]; depth++) {
+            auto *addr = reinterpret_cast<uint64_t *>(current);
+            assert(check_region(region, addr));
+            current = *addr;
+        }
+        values[idx] = current;
+    }
+    set_tile_size(ts1_tile, value_size);
+    set_tile_ready(ts1_tile, 1);
+}
+template <class T1>
 inline void maa_indirect_store_vector(T1 *data, int idx_tile, int src_tile, int cond_tile = -1, int dst_tile = -1) {
     volatile T1 *src = get_cacheable_tile_pointer<T1>(src_tile);
     int *indices = get_cacheable_tile_pointer<int>(idx_tile);
