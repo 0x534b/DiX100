@@ -211,6 +211,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
     }
     if (reconfigure_RT)
         initial_RT_config = num_RT_configs - 1;
+    // warn("initial_RT_config: %d, %d", initial_RT_config, reconfigure_RT);
     DPRINTF(MAAIndirect, "I[%d] %s: initial_RT_config(%d)!\n", my_indirect_id, __func__, initial_RT_config);
 }
 int IndirectAccessUnit::getRowTableIdx(int RT_config, int channel, int rank, int bankgroup, int bank) {
@@ -465,6 +466,8 @@ void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool 
     num_spd_read_condidx_accesses = 0;
     num_rowtable_accesses = 0;
 
+    bool first = true;
+
     checkTileReady();
     while (true) {
         if (my_max != -1 && my_i >= my_max) {
@@ -474,7 +477,7 @@ void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool 
             }
 
             // loop my_i if we need to
-            if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_REP && need_rep) {
+            if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_REP) {
                 my_i = 0;
             } else if (checkReadyForFinish()) {
                 finished = true;
@@ -485,8 +488,19 @@ void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool 
             }
         }
         // reset flag tracking whether we still need to read more levels
-        if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_REP && my_i == 0) {
-            need_rep = false;
+        if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_REP && my_i == last_drain_idx && !first) {
+            if (!has_remaining_reps) {
+                if (checkReadyForFinish()) {
+                    finished = true;
+                    break;
+                } else {
+                    waitForFinish = true;
+                    break;
+                }
+            } else {
+                needDrain = true;
+                break;
+            }
         }
         if (checkElementReady() == false) {
             // Row table parallelism = total #sub-banks. Each bank can be inserted once at a cycle
@@ -499,26 +513,23 @@ void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool 
         }
 
         uint32_t element_cond = maa->spd->getData<uint32_t>(my_cond_tile, my_i);
+        uint32_t idx = maa->spd->getData<uint32_t>(my_idx_tile, my_i);
 
-        if (my_cond_tile == -1 || element_cond != 0) {
-            uint32_t idx;
-            Addr vaddr;
+        if ((my_cond_tile == -1 || element_cond != 0) && (int)idx != -1) {
+            num_spd_read_condidx_accesses++;
+            Addr vaddr = my_base_addr + my_word_size * idx;
 
-            // load direct addresses for INDIR_LD_REP instead of array indices
+            // extra considerations
             if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_REP) {
-                vaddr = maa->spd->getData<uint64_t>(my_idx_tile, my_i);
-                num_spd_read_condidx_accesses++;
+                // set tile to pending
+                maa->spd->setData<uint32_t>(my_idx_tile, my_i, (uint32_t)(-1));
                 // decrement indirection counter
                 uint32_t new_count = element_cond-1;
                 maa->spd->setData<uint32_t>(my_cond_tile, my_i, new_count);
                 // mark if we are going to need to come back and dereference again
                 if (new_count > 0) {
-                    need_rep = true;
+                    has_remaining_reps = true;
                 }
-            } else {
-                idx = maa->spd->getData<uint32_t>(my_idx_tile, my_i);
-                num_spd_read_condidx_accesses++;
-                vaddr = my_base_addr + my_word_size * idx;
             }
 
             panic_if(vaddr < my_min_addr || vaddr >= my_max_addr, "I[%d] %s: vaddr 0x%lx out of range [0x%lx, 0x%lx)!\n", my_indirect_id, __func__, vaddr, my_min_addr, my_max_addr);
@@ -529,6 +540,9 @@ void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool 
             DPRINTF(MAAIndirect, "I[%d] %s: idx = %u, addr = 0x%lx!\n", my_indirect_id, __func__, idx, block_paddr);
             uint16_t wid = (vaddr - block_vaddr) / my_word_size;
             std::vector<int> addr_vec = maa->map_addr(block_paddr);
+
+            warn("index %d to vaddr %p to block_paddr %p", idx, vaddr, block_paddr);
+
             my_RT_idx = getRowTableIdx(my_RT_config, addr_vec[ADDR_CHANNEL_LEVEL], addr_vec[ADDR_RANK_LEVEL], addr_vec[ADDR_BANKGROUP_LEVEL], addr_vec[ADDR_BANK_LEVEL]);
             Addr grow_addr = getGrowAddr(my_RT_config, addr_vec[ADDR_BANKGROUP_LEVEL], addr_vec[ADDR_BANK_LEVEL], addr_vec[ADDR_ROW_LEVEL]);
             DPRINTF(MAAIndirect, "I[%d] %s: inserting vaddr(0x%lx), paddr(0x%lx), MAP(RO: %d, BA: %d, BG: %d, RA: %d, CO: %d, CH: %d), grow(0x%lx), itr(%d), idx(%d), wid(%d) to T[%d]\n", my_indirect_id, __func__, block_vaddr, block_paddr, addr_vec[ADDR_ROW_LEVEL], addr_vec[ADDR_BANK_LEVEL], addr_vec[ADDR_BANKGROUP_LEVEL], addr_vec[ADDR_RANK_LEVEL], addr_vec[ADDR_COLUMN_LEVEL], addr_vec[ADDR_CHANNEL_LEVEL], grow_addr, my_i, idx, wid, my_RT_idx);
@@ -536,6 +550,7 @@ void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool 
             bool inserted = RT[my_RT_config][my_RT_idx].insert(grow_addr, block_paddr, my_i, wid, first_CL_access);
             num_rowtable_accesses++;
             if (inserted == false) {
+                last_drain_idx = my_i;
                 needDrain = true;
                 (*maa->stats.IND_NumRTFull[my_indirect_id])++;
                 break;
@@ -554,6 +569,7 @@ void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool 
             maa->spd->setFakeData(my_dst_tile, my_i, my_word_size);
         }
         my_i++;
+        first = false;
     }
 }
 void IndirectAccessUnit::executeInstruction() {
@@ -580,6 +596,7 @@ void IndirectAccessUnit::executeInstruction() {
         // set destination to source
         if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_REP) {
             my_dst_tile = my_src_tile;
+            last_drain_idx = 0;
         }
 
         if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD ||
@@ -907,6 +924,7 @@ void IndirectAccessUnit::cacheWritePacketSent(Addr addr) {
     }
 }
 bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_block_cached) {
+    warn("got data: %p, %d", (uint64_t)addr, is_block_cached);
     std::vector addr_vec = maa->map_addr(addr);
     int RT_idx = getRowTableIdx(my_RT_config, addr_vec[ADDR_CHANNEL_LEVEL], addr_vec[ADDR_RANK_LEVEL], addr_vec[ADDR_BANKGROUP_LEVEL], addr_vec[ADDR_BANK_LEVEL]);
     Addr grow_addr = getGrowAddr(my_RT_config, addr_vec[ADDR_BANKGROUP_LEVEL], addr_vec[ADDR_BANK_LEVEL], addr_vec[ADDR_ROW_LEVEL]);
@@ -960,6 +978,10 @@ bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_blo
         switch (my_instruction->opcode) {
         case Instruction::OpcodeType::INDIR_LD: {
             assert(my_dst_tile != -1);
+            break;
+        }
+        case Instruction::OpcodeType::INDIR_LD_REP: {
+            // assert(my_dst_tile != -1);
             break;
         }
         case Instruction::OpcodeType::INDIR_ST_VECTOR: {
