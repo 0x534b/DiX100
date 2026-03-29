@@ -20,14 +20,6 @@
 
 static volatile uint64_t global_sink = 0;
 
-inline void prime_tile(int tile_id, uint16_t size) {
-    SPD_size_noncacheable[tile_id] = size;
-    SPD_ready_noncacheable[tile_id] = 1;
-#ifdef GEM5
-    __asm__ __volatile__("mfence;");
-#endif
-}
-
 // build deterministic chain for each lane
 void init_pointer_chains(uint64_t *backing, uint64_t *starts, uint32_t *reps, int n, int depth) {
     assert(depth >= 1);
@@ -44,7 +36,6 @@ void init_pointer_chains(uint64_t *backing, uint64_t *starts, uint32_t *reps, in
     }
 }
 
-// baseline path
 void indir_ld_rep_baseline(uint64_t *out, const uint64_t *starts, const uint32_t *reps, int n) {
 #ifdef GEM5
     m5_work_begin(0, 0);
@@ -66,19 +57,14 @@ void indir_ld_rep_baseline(uint64_t *out, const uint64_t *starts, const uint32_t
 void indir_ld_rep_maa(uint64_t *out, uint64_t *backing, const uint64_t *starts, const uint32_t *reps, int n) {
     init_MAA();
 
+    int max_reg = get_new_reg<int>(n);
+    int min_reg = get_new_reg<int>(0);
+    int stride_reg = get_new_reg<int>(1);
     int addr_tile = get_new_tile<uint64_t>();
     int rep_tile = get_new_tile<uint32_t>();
     int out_tile = get_new_tile<uint64_t>();
-
-    uint64_t *addr_tile_ptr = get_cacheable_tile_pointer<uint64_t>(addr_tile);
-    uint32_t *rep_tile_ptr = get_cacheable_tile_pointer<uint32_t>(rep_tile);
-
-    for (int i = 0; i < n; i++) {
-        addr_tile_ptr[i] = starts[i];
-        rep_tile_ptr[i] = reps[i];
-    }
-    prime_tile(addr_tile, n);
-    prime_tile(rep_tile, n);
+    maa_stream_load<uint64_t>(const_cast<uint64_t *>(starts), min_reg, max_reg, stride_reg, addr_tile);
+    maa_stream_load<uint32_t>(const_cast<uint32_t *>(reps), min_reg, max_reg, stride_reg, rep_tile);
 
 #ifdef GEM5
     m5_work_begin(1, 0);
