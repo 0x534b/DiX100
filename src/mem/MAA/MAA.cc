@@ -551,7 +551,15 @@ void MAA::dispatchInstruction() {
             InstructionPtr instruction = *instruction_it;
             PacketPtr pkt = *pkt_it;
             instruction->src1Status = (Instruction::TileStatus)getTileStatus(instruction, instruction->src1SpdID, false);
-            instruction->src2Status = (Instruction::TileStatus)getTileStatus(instruction, instruction->src2SpdID, false);
+            if (instruction->opcode == Instruction::OpcodeType::INDIR_LD_REP &&
+                instruction->src2SpdID != -1 &&
+                instruction->src2SpdID == instruction->dst1SpdID) {
+                // INDIR_LD_REP reuses src2 as the destination tile during execution,
+                // so it should not wait on that tile as an input dependency.
+                instruction->src2Status = Instruction::TileStatus::Finished;
+            } else {
+                instruction->src2Status = (Instruction::TileStatus)getTileStatus(instruction, instruction->src2SpdID, false);
+            }
             instruction->condStatus = (Instruction::TileStatus)getTileStatus(instruction, instruction->condSpdID, false);
             // assume that we can read from any tile, so invalidate all destinations
             // Instructions with DST1: stream and indirect load, range loop, ALU
@@ -562,7 +570,8 @@ void MAA::dispatchInstruction() {
                 DPRINTF(MAAController, "%s: %s dispatched!\n", __func__, instruction->print());
                 if (instruction->dst1SpdID != -1) {
                     assert(instruction->dst1SpdID != instruction->src1SpdID);
-                    assert(instruction->dst1SpdID != instruction->src2SpdID);
+                    assert(instruction->dst1SpdID != instruction->src2SpdID ||
+                           instruction->opcode == Instruction::OpcodeType::INDIR_LD_REP);
                     spd->setTileIdle(instruction->dst1SpdID, instruction->getWordSize(instruction->dst1SpdID));
                     spd->setTileNotReady(instruction->dst1SpdID, instruction->getWordSize(instruction->dst1SpdID));
                 }
@@ -576,7 +585,10 @@ void MAA::dispatchInstruction() {
                     spd->setTileNotReady(instruction->src1SpdID, instruction->getWordSize(instruction->src1SpdID));
                 }
                 if (instruction->src2SpdID != -1) {
-                    spd->setTileNotReady(instruction->src2SpdID, instruction->getWordSize(instruction->src2SpdID));
+                    if (!(instruction->opcode == Instruction::OpcodeType::INDIR_LD_REP &&
+                          instruction->src2SpdID == instruction->dst1SpdID)) {
+                        spd->setTileNotReady(instruction->src2SpdID, instruction->getWordSize(instruction->src2SpdID));
+                    }
                 }
                 pkt->makeTimingResponse();
                 pkt->headerDelay = pkt->payloadDelay = 0;
@@ -616,7 +628,10 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
         setTileReady(instruction->src1SpdID, instruction->getWordSize(instruction->src1SpdID));
     }
     if (instruction->src2SpdID != -1) {
-        setTileReady(instruction->src2SpdID, instruction->getWordSize(instruction->src2SpdID));
+        if (!(instruction->opcode == Instruction::OpcodeType::INDIR_LD_REP &&
+              instruction->src2SpdID == instruction->dst1SpdID)) {
+            setTileReady(instruction->src2SpdID, instruction->getWordSize(instruction->src2SpdID));
+        }
     }
     ifile->finishInstructionCompute(instruction);
     if (num_maas > 1)

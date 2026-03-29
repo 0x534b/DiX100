@@ -72,6 +72,7 @@ int Instruction::getWordSize(int tile_id) {
         case OpcodeType::ALU_SCALAR:
         case OpcodeType::ALU_VECTOR:
         case OpcodeType::ALU_REDUCE:
+        case OpcodeType::INDIR_LD_REP:
         case OpcodeType::STREAM_ST: {
             return WordSize();
         }
@@ -80,8 +81,7 @@ int Instruction::getWordSize(int tile_id) {
         case OpcodeType::INDIR_ST_SCALAR:
         case OpcodeType::INDIR_RMW_VECTOR:
         case OpcodeType::INDIR_RMW_SCALAR:
-        case OpcodeType::RANGE_LOOP:
-        case OpcodeType::INDIR_LD_REP: {
+        case OpcodeType::RANGE_LOOP: {
             return 4;
         }
         default:
@@ -91,6 +91,7 @@ int Instruction::getWordSize(int tile_id) {
         switch (opcode) {
         case OpcodeType::INDIR_ST_VECTOR:
         case OpcodeType::INDIR_RMW_VECTOR:
+        case OpcodeType::INDIR_LD_REP:
         case OpcodeType::ALU_VECTOR: {
             return WordSize();
         }

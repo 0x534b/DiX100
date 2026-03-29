@@ -464,6 +464,7 @@ void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool 
     needDrain = false;
     num_spd_read_condidx_accesses = 0;
     num_rowtable_accesses = 0;
+
     checkTileReady();
     while (true) {
         if (my_max != -1 && my_i >= my_max) {
@@ -471,13 +472,21 @@ void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool 
                 panic_if(my_max != -1 && my_i != my_max, "I[%d] %s: my_i(%d) != my_max(%d)!\n", my_indirect_id, __func__, my_i, my_max);
                 maa->spd->setSize(my_dst_tile, my_i);
             }
-            if (checkReadyForFinish()) {
+
+            // loop my_i if we need to
+            if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_REP && need_rep) {
+                my_i = 0;
+            } else if (checkReadyForFinish()) {
                 finished = true;
                 break;
             } else {
                 waitForFinish = true;
                 break;
             }
+        }
+        // reset flag tracking whether we still need to read more levels
+        if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_REP && my_i == 0) {
+            need_rep = false;
         }
         if (checkElementReady() == false) {
             // Row table parallelism = total #sub-banks. Each bank can be inserted once at a cycle
@@ -504,7 +513,7 @@ void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool 
                 maa->spd->setData<uint32_t>(my_cond_tile, my_i, new_count);
                 // mark if we are going to need to come back and dereference again
                 if (new_count > 0) {
-                    needDrain = true;
+                    need_rep = true;
                 }
             } else {
                 idx = maa->spd->getData<uint32_t>(my_idx_tile, my_i);
