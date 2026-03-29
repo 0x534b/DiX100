@@ -126,6 +126,7 @@ protected:
     bool my_fill_finished;
     bool my_force_cache_determined;
     bool my_force_cache;
+    bool need_rep;
 
     bool my_translation_done;
     Addr my_translated_addr;
