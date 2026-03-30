@@ -1,12 +1,12 @@
 # `benchmark_indir_ld_rep`
 
-This benchmark evaluates the repeated indirect-load path implemented by:
+This benchmark evaluates three ways of executing repeated indirect loads:
 
-- the CPU baseline loop (`BASE`)
-- the MAA instruction path (`MAA`)
-- correctness comparison between them (`CMP`)
+- `BASE`: scalar CPU pointer-chasing loop
+- `MAA_INDIR_LD_REP`: fused `maa_indirect_load_rep` instruction path
+- `MAA_LOOP`: looped single-hop `maa_indirect_load` path used as an apples-to-apples MAA baseline
 
-At a high level, each lane starts from an index in `starts[i]`, follows a pointer chain in `backing`, and repeats that dereference `reps[i]` times. The MAA path exercises `maa_indirect_load_rep`, while the baseline path performs the same work as a scalar CPU loop.
+At a high level, each lane starts from `starts[i]`, follows a pointer chain in `backing`, and repeats that dereference `reps[i]` times. The benchmark can compare the fused repeated-indirect-load instruction both against the CPU implementation and against repeated single-hop MAA loads.
 
 ## What The Benchmark Is Measuring
 
@@ -14,14 +14,15 @@ The benchmark is meant to answer:
 
 - how performance changes as the number of active lanes `n` increases
 - how performance changes as indirect-chain depth increases
-- how the new repeated indirect-load instruction compares against the baseline CPU implementation
-- whether the instruction behaves differently under regular, irregular, shallow, deep, and mixed-depth access patterns
+- how `maa_indirect_load_rep` compares against the scalar CPU implementation
+- how `maa_indirect_load_rep` compares against a looped single-hop MAA implementation
+- whether behavior changes under regular, irregular, shallow, deep, and mixed-depth access patterns
 
 The main knobs are:
 
 - `n`: number of active lanes
 - `depth`: maximum pointer-chain depth
-- `scenario`: the access pattern used to populate `starts`, `reps`, and `backing`
+- `scenario`: access pattern used to populate `starts`, `reps`, and `backing`
 - `arena_mult`: working-set expansion factor for scenarios that randomize addresses
 
 ## Command-Line Interface
@@ -29,7 +30,7 @@ The main knobs are:
 The benchmark binary accepts:
 
 ```bash
-./benchmark_indir_ld_rep.o <n> <depth> <BASE|MAA|CMP> <scenario> [arena_mult]
+./benchmark_indir_ld_rep.o <n> <depth> <BASE|MAA_INDIR_LD_REP|MAA_LOOP|CMP> <scenario> [arena_mult]
 ```
 
 Example:
@@ -42,7 +43,7 @@ Meaning:
 
 - `64` active lanes
 - maximum depth `8`
-- run both baseline and MAA and compare outputs
+- run all implementations and compare outputs
 - use the `bfs_adj_list` scenario
 - use `arena_mult=64`
 
@@ -58,13 +59,13 @@ What it tests:
 
 - best-case spatial locality
 - minimal address randomness
-- whether the new instruction still helps when the baseline already has a friendly memory layout
+- whether the fused instruction still helps when the CPU baseline already has a cache-friendly layout
 
 Interpretation:
 
 - this is the easiest case for caches and prefetching
-- if MAA only helps here a little, that is expected
-- if MAA helps a lot here too, that suggests lower control overhead or better overlap even in a friendly case
+- if `MAA_INDIR_LD_REP` helps only a little here, that is expected
+- this scenario is less representative for performance claims about irregular memory behavior
 
 ### `random_arena`
 
@@ -79,7 +80,7 @@ What it tests:
 Interpretation:
 
 - this is a core stress case for repeated indirect loads
-- useful for comparing cache misses, memory reads, and CPI between `BASE` and `MAA`
+- useful for comparing cache misses, memory reads, and CPI across `BASE`, `MAA_INDIR_LD_REP`, and `MAA_LOOP`
 
 ### `variable_depth_random`
 
@@ -89,12 +90,12 @@ What it tests:
 
 - irregular addresses and irregular repetition counts at the same time
 - load imbalance across lanes
-- how well the new instruction handles mixed completion times
+- how well both MAA paths handle mixed completion times
 
 Interpretation:
 
 - this is a stronger irregularity test than `random_arena`
-- good for checking whether MAA still behaves well when `reps[i]` varies per lane
+- especially useful now that `MAA_LOOP` uses per-hop masking to preserve correctness for variable per-lane `reps`
 
 ### `bfs_adj_list`
 
@@ -133,8 +134,8 @@ Half the lanes are shallow (`reps=1`), and half are deep (`reps=depth`), with la
 What it tests:
 
 - mixed shallow and deep chains in the same instruction
-- whether the new instruction handles strongly unbalanced per-lane work well
-- robustness against a simple sequential grouping that a prefetcher might exploit
+- whether the fused repeated-load path handles strongly unbalanced per-lane work well
+- how the fused path compares against repeated single-hop MAA loads under heterogeneous work
 
 Interpretation:
 
@@ -152,16 +153,19 @@ If you are not sure where to start:
 - use `uniform_local` as a locality-friendly baseline
 - use `bimodal_depth` when you specifically want mixed shallow/deep lanes
 
-## `BASE`, `MAA`, And `CMP`
+## Modes
 
 - `BASE`: runs only the scalar CPU implementation
-- `MAA`: runs only the MAA implementation using `maa_indirect_load_rep`
-- `CMP`: runs both and checks that their outputs match
+- `MAA_INDIR_LD_REP`: runs only the fused repeated indirect-load MAA path using `maa_indirect_load_rep`
+- `MAA_LOOP`: runs only the looped single-hop MAA path using repeated masked `maa_indirect_load`
+- `CMP`: runs `BASE`, `MAA_INDIR_LD_REP`, and `MAA_LOOP`, then checks that both MAA paths match the CPU baseline
 
 Recommended workflow:
 
 1. use `CMP` in `FUNC` mode for quick correctness checks
-2. use `BASE` and `MAA` in `GEM5` mode for actual performance studies
+2. use `BASE`, `MAA_INDIR_LD_REP`, and `MAA_LOOP` in `GEM5` mode for performance studies
+3. compare `MAA_INDIR_LD_REP` vs `MAA_LOOP` when you want to isolate the instruction-level benefit of `INDIR_LD_REP`
+4. compare `MAA_INDIR_LD_REP` vs `BASE` when you want the system-level CPU-versus-MAA result
 
 ## `FUNC` vs `GEM5`
 
@@ -228,17 +232,23 @@ bash make_benchmark_indir_ld_rep.sh FUNC
 ./benchmark_indir_ld_rep.o 64 8 CMP bfs_adj_list 64
 ```
 
-### GEM5 single run
+### GEM5 single run: fused instruction
 
 ```bash
 bash make_benchmark_indir_ld_rep.sh GEM5
-bash run_benchmark_indir_ld_rep.sh 64 8 MAA bfs_adj_list 64
+bash run_benchmark_indir_ld_rep.sh 64 8 MAA_INDIR_LD_REP bfs_adj_list 64
+```
+
+### GEM5 single run: looped MAA baseline
+
+```bash
+bash run_benchmark_indir_ld_rep.sh 64 8 MAA_LOOP bfs_adj_list 64
 ```
 
 ### GEM5 single run with shared output in `/tmp`
 
 ```bash
-OUTDIR_MODE=shared OUTDIR_ROOT=/tmp bash run_benchmark_indir_ld_rep.sh 64 8 MAA bfs_adj_list 64
+OUTDIR_MODE=shared OUTDIR_ROOT=/tmp bash run_benchmark_indir_ld_rep.sh 64 8 MAA_INDIR_LD_REP bfs_adj_list 64
 ```
 
 ## How `run_benchmark_indir_ld_rep.sh` Works
@@ -277,12 +287,12 @@ By default it:
 
 - runs in shared outdir mode
 - uses `/tmp` for gem5 output
-- sweeps `MAA` only unless you set `MODES`
+- sweeps `MAA_INDIR_LD_REP` only unless you set `MODES`
 - appends one CSV row per completed run
 
 Default knobs:
 
-- `MODES=MAA`
+- `MODES=MAA_INDIR_LD_REP`
 - `SCENARIO=bfs_adj_list`
 - `ARENA_MULT=64`
 - `N_LIST="64 256 1024"`
@@ -291,8 +301,8 @@ Default knobs:
 Important:
 
 - `MAX_RUNS` defaults to the full candidate count
-- if you set `MODES="BASE MAA"`, the sweep will include both
-- the CSV contains a `mode` column, so `BASE` and `MAA` results stay separate
+- if you set `MODES="BASE MAA_INDIR_LD_REP MAA_LOOP"`, the sweep will include all three standalone paths
+- the CSV contains a `mode` column, so `BASE`, `MAA_INDIR_LD_REP`, and `MAA_LOOP` results stay separate
 
 ## Running The Sweep
 
@@ -301,32 +311,38 @@ Typical workflow:
 ```bash
 cd /u7/c47fan/cs450/DiX100/benchmarks/API
 bash make_benchmark_indir_ld_rep.sh GEM5
-DRY_RUN=1 MODES="BASE MAA" bash sweep.sh
-MODES="BASE MAA" bash sweep.sh
+DRY_RUN=1 MODES="BASE MAA_INDIR_LD_REP MAA_LOOP" bash sweep.sh
+MODES="BASE MAA_INDIR_LD_REP MAA_LOOP" bash sweep.sh
 ```
 
 ### Run only one scenario
 
 ```bash
-SCENARIO=bfs_adj_list MODES="BASE MAA" bash sweep.sh
+SCENARIO=bfs_adj_list MODES="BASE MAA_INDIR_LD_REP MAA_LOOP" bash sweep.sh
 ```
 
 ### Run a smaller sweep
 
 ```bash
-SCENARIO=bfs_adj_list MODES="BASE MAA" N_LIST="64 256" DEPTH_LIST="4 8" bash sweep.sh
+SCENARIO=bfs_adj_list MODES="BASE MAA_INDIR_LD_REP MAA_LOOP" N_LIST="64 256" DEPTH_LIST="4 8" bash sweep.sh
 ```
 
 ### Run a random-pointer stress test
 
 ```bash
-SCENARIO=random_arena MODES="BASE MAA" bash sweep.sh
+SCENARIO=random_arena MODES="BASE MAA_INDIR_LD_REP MAA_LOOP" bash sweep.sh
 ```
 
 ### Run a mixed-depth stress test
 
 ```bash
-SCENARIO=bimodal_depth MODES="BASE MAA" DEPTH_LIST="2 4 8" bash sweep.sh
+SCENARIO=bimodal_depth MODES="BASE MAA_INDIR_LD_REP MAA_LOOP" DEPTH_LIST="2 4 8" bash sweep.sh
+```
+
+### Run only the fused-vs-looped comparison
+
+```bash
+MODES="MAA_INDIR_LD_REP MAA_LOOP" SCENARIO=bfs_adj_list bash sweep.sh
 ```
 
 ## Sweep Output
@@ -364,42 +380,39 @@ This detail matters because gem5 `stats.txt` can contain multiple statistics sec
 For this benchmark:
 
 - `BASE` runs generate two sections
-- `MAA` runs generate two sections
-- `CMP` runs generate three sections
+- `MAA_INDIR_LD_REP` runs generate two sections
+- `MAA_LOOP` runs generate two sections
+- `CMP` runs generate four sections
 
 Why:
 
-- the benchmark calls `m5_reset_stats()` immediately before the measured kernel
-- it calls `m5_dump_stats()` immediately after that kernel
+- the benchmark calls `m5_reset_stats()` immediately before each measured kernel
+- it calls `m5_dump_stats()` immediately after each measured kernel
 - gem5 also writes a final end-of-simulation stats section when the program exits
 
-For `BASE` mode:
+For standalone modes:
 
-- section 1 is the measured baseline kernel region
-- section 2 is the final cumulative section after the benchmarked region
-
-For `MAA` mode:
-
-- section 1 is the measured MAA kernel region
+- section 1 is the measured kernel region
 - section 2 is the final cumulative section after the benchmarked region
 
 For `CMP` mode:
 
-- section 1 is the measured baseline kernel region
-- section 2 is the measured MAA kernel region
-- section 3 is the final cumulative section after the second measured region
+- section 1 is the measured `BASE` kernel region
+- section 2 is the measured `MAA_INDIR_LD_REP` kernel region
+- section 3 is the measured `MAA_LOOP` kernel region
+- section 4 is the final cumulative section after the measured regions
 
-`sweep.sh` is designed for performance sweeps over `BASE` and `MAA`, not `CMP`.
+`sweep.sh` is designed for performance sweeps over standalone modes, not `CMP`.
 For each run, it extracts the first matching occurrence of each stat key from `stats.txt`.
 
 That means:
 
 - for `BASE`, the sweep uses section 1
-- for `MAA`, the sweep uses section 1
+- for `MAA_INDIR_LD_REP`, the sweep uses section 1
+- for `MAA_LOOP`, the sweep uses section 1
 - `CMP` is intentionally not supported by `sweep.sh`
 
-This is the intended behavior, because section 1 is the clean kernel-only measurement for standalone `BASE` and standalone `MAA` runs.
-The later stats sections include trailing benchmark work such as checksum/output/cleanup and are not the primary per-kernel measurement you usually want in the CSV.
+This is the intended behavior, because section 1 is the clean kernel-only measurement for standalone runs. Later sections include trailing benchmark work such as checksum, printing, and cleanup.
 
 ## Interpreting The CSV
 
@@ -412,7 +425,8 @@ A good first comparison is to group rows by:
 
 Then compare:
 
-- `BASE` vs `MAA`
+- `BASE` vs `MAA_INDIR_LD_REP`
+- `MAA_INDIR_LD_REP` vs `MAA_LOOP`
 - `cpu0_cpi`
 - `cpu0_ipc`
 - `mem_num_reads_total`
@@ -423,10 +437,11 @@ Then compare:
 Questions the CSV can help answer:
 
 - does MAA reduce CPU-side CPI as depth increases?
+- does the fused repeated-load instruction beat the looped single-hop MAA path?
 - does MAA reduce or increase memory traffic?
-- do cache misses scale differently between baseline and MAA?
-- which scenario benefits most from the new instruction?
-- is the instruction more helpful for large `n`, deep chains, or both?
+- do cache misses scale differently between the CPU baseline and the MAA paths?
+- which scenario benefits most from the fused repeated indirect-load instruction?
+- is the instruction more helpful for large `n`, deep chains, irregular depths, or all of the above?
 
 ## Recommended Experiments
 
@@ -441,15 +456,22 @@ bash make_benchmark_indir_ld_rep.sh FUNC
 
 ```bash
 bash make_benchmark_indir_ld_rep.sh GEM5
-SCENARIO=bfs_adj_list MODES="BASE MAA" N_LIST="64 256" DEPTH_LIST="4 8" bash sweep.sh
+SCENARIO=bfs_adj_list MODES="BASE MAA_INDIR_LD_REP MAA_LOOP" N_LIST="64 256" DEPTH_LIST="4 8" bash sweep.sh
+```
+
+### Fused-vs-looped instruction study
+
+```bash
+bash make_benchmark_indir_ld_rep.sh GEM5
+SCENARIO=bfs_adj_list MODES="MAA_INDIR_LD_REP MAA_LOOP" N_LIST="64 256 1024" DEPTH_LIST="1 4 8" bash sweep.sh
 ```
 
 ### Irregularity study
 
 ```bash
-SCENARIO=random_arena MODES="BASE MAA" bash sweep.sh
-SCENARIO=variable_depth_random MODES="BASE MAA" bash sweep.sh
-SCENARIO=bimodal_depth MODES="BASE MAA" DEPTH_LIST="2 4 8" bash sweep.sh
+SCENARIO=random_arena MODES="BASE MAA_INDIR_LD_REP MAA_LOOP" bash sweep.sh
+SCENARIO=variable_depth_random MODES="BASE MAA_INDIR_LD_REP MAA_LOOP" bash sweep.sh
+SCENARIO=bimodal_depth MODES="BASE MAA_INDIR_LD_REP MAA_LOOP" DEPTH_LIST="2 4 8" bash sweep.sh
 ```
 
 ## Notes And Caveats

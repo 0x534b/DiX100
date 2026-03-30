@@ -12,14 +12,14 @@ fi
 
 # Conservative defaults
 # Override any of these with environment variables, for example:
-#   MODES="BASE MAA" N_LIST="64 256" DEPTH_LIST="1 4 8" MAX_RUNS=4 bash sweep.sh
+#   MODES="BASE MAA_INDIR_LD_REP MAA_LOOP" N_LIST="64 256" DEPTH_LIST="1 4 8" MAX_RUNS=4 bash sweep.sh
 #   DRY_RUN=1 bash sweep.sh
 
 RUNNER="${RUNNER:-bash run_benchmark_indir_ld_rep.sh}"
 OUTDIR_MODE="${OUTDIR_MODE:-shared}"
 OUTDIR_ROOT="${OUTDIR_ROOT:-/tmp}"
 SHARED_OUTDIR_NAME="${SHARED_OUTDIR_NAME:-chkpt_indir_ld_rep_shared}"
-MODES="${MODES:-MAA}"
+MODES="${MODES:-MAA_INDIR_LD_REP}"
 SCENARIO="${SCENARIO:-bfs_adj_list}"
 ARENA_MULT="${ARENA_MULT:-64}"
 N_LIST="${N_LIST:-64 256 1024}"
@@ -38,7 +38,7 @@ Environment overrides:
   OUTDIR_MODE=shared
   OUTDIR_ROOT=/tmp
   SHARED_OUTDIR_NAME=chkpt_indir_ld_rep_shared
-  MODES="MAA" or "BASE MAA"
+  MODES="MAA_INDIR_LD_REP" or "BASE MAA_INDIR_LD_REP MAA_LOOP"
   SCENARIO="bfs_adj_list"
   ARENA_MULT=64
   N_LIST="64 256 1024"
@@ -51,7 +51,7 @@ Environment overrides:
 Examples:
   bash sweep.sh
   OUTDIR_MODE=shared OUTDIR_ROOT=/tmp bash sweep.sh
-  MODES="BASE MAA" MAX_RUNS=6 bash sweep.sh
+  MODES="BASE MAA_INDIR_LD_REP MAA_LOOP" MAX_RUNS=6 bash sweep.sh
   N_LIST="64 128 256 512" DEPTH_LIST="2 4" bash sweep.sh
   DRY_RUN=1 bash sweep.sh
 
@@ -83,7 +83,7 @@ count_words() {
 for mode in $MODES; do
     if [ "$mode" = "CMP" ]; then
         echo "sweep.sh does not support CMP mode."
-        echo "Use MODES=\"BASE MAA\" for performance sweeps."
+        echo "Use MODES=\"BASE MAA_INDIR_LD_REP MAA_LOOP\" for performance sweeps."
         echo "Use CMP only for standalone correctness checks."
         exit 1
     fi

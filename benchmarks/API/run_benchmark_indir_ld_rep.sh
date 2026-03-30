@@ -52,8 +52,8 @@ if [ ! -e ./benchmark_indir_ld_rep.o ]; then
     exit 1
 fi
 
-if [ "${MODE}" != "BASE" ] && [ "${MODE}" != "MAA" ] && [ "${MODE}" != "CMP" ]; then
-    echo "Usage: bash run_benchmark_indir_ld_rep.sh [n] [depth] [BASE|MAA|CMP] [uniform_local|random_arena|variable_depth_random|bfs_adj_list] [arena_mult]"
+if [ "${MODE}" != "BASE" ] && [ "${MODE}" != "MAA_INDIR_LD_REP" ] && [ "${MODE}" != "MAA_LOOP" ] && [ "${MODE}" != "CMP" ]; then
+    echo "Usage: bash run_benchmark_indir_ld_rep.sh [n] [depth] [BASE|MAA_INDIR_LD_REP|MAA_LOOP|CMP] [uniform_local|random_arena|variable_depth_random|bfs_adj_list|spmv_gather|bimodal_depth] [arena_mult]"
     echo "Optional env:"
     echo "  OUTDIR=/tmp/my_run_dir"
     echo "  OUTDIR_MODE=shared"

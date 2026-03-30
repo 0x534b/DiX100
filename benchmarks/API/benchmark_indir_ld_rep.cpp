@@ -38,7 +38,7 @@ const uint32_t kScenarioSeed = 0x00c47fa1u;
 
 void print_usage(const char *name) {
     std::cout << "Usage: " << name
-              << " <n> <depth> [BASE|MAA|CMP] [uniform_local|random_arena|variable_depth_random|bfs_adj_list|spmv_gather|bimodal_depth] [arena_mult]"
+              << " <n> <depth> [BASE|MAA_INDIR_LD_REP|MAA_LOOP|CMP] [uniform_local|random_arena|variable_depth_random|bfs_adj_list|spmv_gather|bimodal_depth] [arena_mult]"
               << std::endl;
 }
 
@@ -345,6 +345,55 @@ void indir_ld_rep_maa(uint32_t *out, uint32_t *backing, const uint32_t *starts, 
     }
 }
 
+void indir_ld_maa_loop(uint32_t *out, uint32_t *backing, const uint32_t *starts, const uint32_t *reps, int n) {
+    init_MAA();
+
+    int max_reg = get_new_reg<int>(n);
+    int min_reg = get_new_reg<int>(0);
+    int stride_reg = get_new_reg<int>(1);
+    int zero_reg = get_new_reg<uint32_t>(0u);
+    int hop_reg = get_new_reg<uint32_t>(0u);
+    int idx_tile = get_new_tile<uint32_t>();
+    int rep_tile = get_new_tile<uint32_t>();
+    int next_idx_tile = get_new_tile<uint32_t>();
+    int active_tile = get_new_tile<uint32_t>();
+
+    maa_stream_load<uint32_t>(const_cast<uint32_t *>(starts), min_reg, max_reg, stride_reg, idx_tile);
+    maa_stream_load<uint32_t>(const_cast<uint32_t *>(reps), min_reg, max_reg, stride_reg, rep_tile);
+    wait_ready(idx_tile);
+    wait_ready(rep_tile);
+
+    uint32_t max_reps = *std::max_element(reps, reps + n);
+
+#ifdef GEM5
+    m5_work_begin(2, 0);
+    m5_reset_stats(0, 0);
+#endif
+    for (uint32_t hop = 0; hop < max_reps; hop++) {
+        set_reg<uint32_t>(hop_reg, hop);
+        maa_alu_scalar<uint32_t>(rep_tile, hop_reg, active_tile, Operation_t::GT_OP);
+        wait_ready(active_tile);
+
+        // Preserve lanes that are already done before conditionally advancing active lanes.
+        maa_alu_scalar<uint32_t>(idx_tile, zero_reg, next_idx_tile, Operation_t::ADD_OP);
+        wait_ready(next_idx_tile);
+
+        maa_indirect_load<uint32_t>(backing, idx_tile, next_idx_tile, active_tile);
+        wait_ready(next_idx_tile);
+
+        std::swap(idx_tile, next_idx_tile);
+    }
+#ifdef GEM5
+    m5_dump_stats(0, 0);
+    m5_work_end(2, 0);
+#endif
+
+    uint32_t *out_tile_ptr = get_cacheable_tile_pointer<uint32_t>(idx_tile);
+    for (int i = 0; i < n; i++) {
+        out[i] = out_tile_ptr[i];
+    }
+}
+
 uint32_t checksum(const uint32_t *data, int n) {
     uint64_t sum = 0;
     for (int i = 0; i < n; i++) {
@@ -380,8 +429,9 @@ int main(int argc, char *argv[]) {
     }
     int arena_mult = argc >= 6 ? std::stoi(argv[5]) : 64;
     bool run_base = mode == "BASE" || mode == "CMP";
-    bool run_maa = mode == "MAA" || mode == "CMP";
-    if ((!run_base && !run_maa) || n <= 0 || n > TILE_SIZE || depth <= 0 || arena_mult <= 0) {
+    bool run_maa = mode == "MAA_INDIR_LD_REP" || mode == "CMP";
+    bool run_maa_loop = mode == "MAA_LOOP" || mode == "CMP";
+    if ((!run_base && !run_maa && !run_maa_loop) || n <= 0 || n > TILE_SIZE || depth <= 0 || arena_mult <= 0) {
         print_usage(argv[0]);
 #ifdef GEM5
         m5_exit(1);
@@ -395,13 +445,16 @@ int main(int argc, char *argv[]) {
     uint32_t *reps = static_cast<uint32_t *>(malloc(sizeof(uint32_t) * n));
     uint32_t *base_out = static_cast<uint32_t *>(malloc(sizeof(uint32_t) * n));
     uint32_t *maa_out = static_cast<uint32_t *>(malloc(sizeof(uint32_t) * n));
-    if (backing == nullptr || starts == nullptr || reps == nullptr || base_out == nullptr || maa_out == nullptr) {
+    uint32_t *maa_loop_out = static_cast<uint32_t *>(malloc(sizeof(uint32_t) * n));
+    if (backing == nullptr || starts == nullptr || reps == nullptr || base_out == nullptr || maa_out == nullptr ||
+        maa_loop_out == nullptr) {
         std::cout << "Allocation failed" << std::endl;
         free(backing);
         free(starts);
         free(reps);
         free(base_out);
         free(maa_out);
+        free(maa_loop_out);
 #ifdef GEM5
         m5_exit(1);
 #endif
@@ -412,12 +465,13 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i < n; i++) {
         base_out[i] = 0;
         maa_out[i] = 0;
+        maa_loop_out[i] = 0;
     }
 
 #if defined(FUNC)
     alloc_MAA();
 #else
-    if (run_maa) {
+    if (run_maa || run_maa_loop) {
         alloc_MAA();
     }
 #endif
@@ -428,11 +482,12 @@ int main(int argc, char *argv[]) {
 #elif defined(GEM5)
     m5_clear_mem_region();
     m5_add_mem_region(backing, backing + backing_elems, 0);
-    if (run_maa) {
+    if (run_maa || run_maa_loop) {
         m5_add_mem_region(starts, starts + n, 1);
         m5_add_mem_region(reps, reps + n, 2);
         m5_add_mem_region(base_out, base_out + n, 3);
         m5_add_mem_region(maa_out, maa_out + n, 4);
+        m5_add_mem_region(maa_loop_out, maa_loop_out + n, 5);
     }
 #endif
 
@@ -445,7 +500,9 @@ int main(int argc, char *argv[]) {
               << std::endl;
     print_lane_samples(backing, starts, reps, n);
 
-    uint32_t base_sum, maa_sum;
+    uint32_t base_sum = 0;
+    uint32_t maa_sum = 0;
+    uint32_t maa_loop_sum = 0;
     if (run_base) {
         indir_ld_rep_baseline(base_out, backing, starts, reps, n);
         base_sum = checksum(base_out, n);
@@ -470,9 +527,23 @@ int main(int argc, char *argv[]) {
         std::cout << std::endl;
     }
 
+    if (run_maa_loop) {
+        indir_ld_maa_loop(maa_loop_out, backing, starts, reps, n);
+        maa_loop_sum = checksum(maa_loop_out, n);
+        global_sink ^= maa_loop_sum;
+        std::cout << "maa loop checksum " << maa_loop_sum << std::endl;
+        std::cout << "out: ";
+        for (int i = 0; i < n; i++) {
+            std::cout << maa_loop_out[i] << " ";
+        }
+        std::cout << std::endl;
+    }
+
     bool passed = true;
     if (mode == "CMP") {
-        if (base_sum == maa_sum && compare_arrays(base_out, maa_out, n)) {
+        bool maa_matches = base_sum == maa_sum && compare_arrays(base_out, maa_out, n);
+        bool maa_loop_matches = base_sum == maa_loop_sum && compare_arrays(base_out, maa_loop_out, n);
+        if (maa_matches && maa_loop_matches) {
             std::cout << "indir_ld_rep benchmark outputs match" << std::endl;
         } else {
             passed = false;
@@ -484,6 +555,7 @@ int main(int argc, char *argv[]) {
     free(reps);
     free(base_out);
     free(maa_out);
+    free(maa_loop_out);
 
 #ifdef GEM5
     m5_exit(passed ? 0 : 1);
