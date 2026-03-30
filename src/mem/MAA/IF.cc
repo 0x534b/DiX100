@@ -72,6 +72,7 @@ int Instruction::getWordSize(int tile_id) {
         case OpcodeType::ALU_SCALAR:
         case OpcodeType::ALU_VECTOR:
         case OpcodeType::ALU_REDUCE:
+        case OpcodeType::INDIR_LD_REP:
         case OpcodeType::STREAM_ST: {
             return WordSize();
         }
@@ -90,6 +91,7 @@ int Instruction::getWordSize(int tile_id) {
         switch (opcode) {
         case OpcodeType::INDIR_ST_VECTOR:
         case OpcodeType::INDIR_RMW_VECTOR:
+        case OpcodeType::INDIR_LD_REP:
         case OpcodeType::ALU_VECTOR: {
             return WordSize();
         }
@@ -114,7 +116,8 @@ int Instruction::getWordSize(int tile_id) {
         case OpcodeType::INDIR_ST_VECTOR:
         case OpcodeType::INDIR_ST_SCALAR:
         case OpcodeType::INDIR_RMW_VECTOR:
-        case OpcodeType::INDIR_RMW_SCALAR: {
+        case OpcodeType::INDIR_RMW_SCALAR:
+        case OpcodeType::INDIR_LD_REP: {
             return WordSize();
         }
         case OpcodeType::RANGE_LOOP: {
@@ -164,7 +167,8 @@ bool IF::pushInstruction(Instruction _instruction) {
     case Instruction::OpcodeType::INDIR_ST_VECTOR:
     case Instruction::OpcodeType::INDIR_ST_SCALAR:
     case Instruction::OpcodeType::INDIR_RMW_VECTOR:
-    case Instruction::OpcodeType::INDIR_RMW_SCALAR: {
+    case Instruction::OpcodeType::INDIR_RMW_SCALAR:
+    case Instruction::OpcodeType::INDIR_LD_REP: {
         _instruction.funcUniType = FuncUnitType::INDIRECT;
         break;
     }
