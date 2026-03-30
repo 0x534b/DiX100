@@ -12,7 +12,7 @@ fi
 
 # Conservative defaults
 # Override any of these with environment variables, for example:
-#   MODES="BASE MAA_INDIR_LD_REP MAA_LOOP" N_LIST="64 256" DEPTH_LIST="1 4 8" MAX_RUNS=4 bash sweep.sh
+#   MODES="BASE MAA_INDIR_LD_REP MAA_LOOP" N_LIST="64 256" DEPTH_LIST="2 4 8" MAX_RUNS=4 bash sweep.sh
 #   DRY_RUN=1 bash sweep.sh
 
 RUNNER="${RUNNER:-bash run_benchmark_indir_ld_rep.sh}"
@@ -23,7 +23,7 @@ MODES="${MODES:-MAA_INDIR_LD_REP}"
 SCENARIO="${SCENARIO:-bfs_adj_list}"
 ARENA_MULT="${ARENA_MULT:-64}"
 N_LIST="${N_LIST:-64 256 1024}"
-DEPTH_LIST="${DEPTH_LIST:-1 4 8}"
+DEPTH_LIST="${DEPTH_LIST:-2 4 8}"
 MAX_RUNS="${MAX_RUNS:-}"
 SKIP_EXISTING="${SKIP_EXISTING:-1}"
 DRY_RUN="${DRY_RUN:-0}"
@@ -42,7 +42,7 @@ Environment overrides:
   SCENARIO="bfs_adj_list"
   ARENA_MULT=64
   N_LIST="64 256 1024"
-  DEPTH_LIST="1 4 8"
+  DEPTH_LIST="2 4 8"
   MAX_RUNS=<full sweep by default>
   SKIP_EXISTING=1
   DRY_RUN=0

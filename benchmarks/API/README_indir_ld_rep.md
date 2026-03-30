@@ -296,7 +296,7 @@ Default knobs:
 - `SCENARIO=bfs_adj_list`
 - `ARENA_MULT=64`
 - `N_LIST="64 256 1024"`
-- `DEPTH_LIST="1 4 8"`
+- `DEPTH_LIST="2 4 8"`
 
 Important:
 
