@@ -62,7 +62,7 @@ void indir_ld_rep_maa(uint32_t *out, uint32_t *backing, const uint32_t *starts, 
     int stride_reg = get_new_reg<int>(1);
     int addr_tile = get_new_tile<uint64_t>();
     int rep_tile = get_new_tile<uint32_t>();
-    int out_tile = get_new_tile<uint64_t>();
+    int out_tile = get_new_tile<uint32_t>();
     maa_stream_load<uint32_t>(const_cast<uint32_t *>(starts), min_reg, max_reg, stride_reg, addr_tile);
     maa_stream_load<uint32_t>(const_cast<uint32_t *>(reps), min_reg, max_reg, stride_reg, rep_tile);
 
@@ -78,7 +78,7 @@ void indir_ld_rep_maa(uint32_t *out, uint32_t *backing, const uint32_t *starts, 
     m5_work_end(1, 0);
 #endif
 
-    uint64_t *out_tile_ptr = get_cacheable_tile_pointer<uint64_t>(out_tile);
+    uint32_t *out_tile_ptr = get_cacheable_tile_pointer<uint32_t>(addr_tile);
     for (int i = 0; i < n; i++) {
         out[i] = out_tile_ptr[i];
     }
@@ -168,24 +168,52 @@ int main(int argc, char *argv[]) {
     }
 #endif
 
+    // print out the starts array
+    std::cout << "starts: ";
+    for (int i = 0; i < n; i++) {
+        std::cout << starts[i] << " ";
+    }
+    std::cout << std::endl;
+    
+    
+    // print out backing array for all lanes
+    std::cout << "backing: ";
+    for (int i = 0; i < n; i++) {
+        std::cout << "\nLane " << i << ": ";
+        for (int hop = 0; hop < depth + 1; hop++) {
+            std::cout << backing[i * (depth + 1) + hop] << " ";
+        }
+    }
+    std::cout << std::endl;
+
+    uint32_t base_sum, maa_sum;
     if (run_base) {
         indir_ld_rep_baseline(base_out, backing, starts, reps, n);
-        uint32_t base_sum = checksum(base_out, n);
+        base_sum = checksum(base_out, n);
         global_sink ^= base_sum;
         std::cout << "baseline checksum " << base_sum << std::endl;
+        std::cout << "out: ";
+        for (int i = 0; i < n; i++) {
+            std::cout << base_out[i] << " ";
+        }
+        std::cout << std::endl;
     }
 
     if (run_maa) {
         indir_ld_rep_maa(maa_out, backing, starts, reps, n);
-        uint32_t maa_sum = checksum(maa_out, n);
+        maa_sum = checksum(maa_out, n);
         global_sink ^= maa_sum;
         std::cout << "maa checksum " << maa_sum << std::endl;
+        std::cout << "out: ";
+        for (int i = 0; i < n; i++) {
+            std::cout << maa_out[i] << " ";
+        }
+        std::cout << std::endl;
     }
 
     bool passed = true;
     if (mode == "CMP") {
-        passed = compare_arrays(base_out, maa_out, n);
-        if (passed) {
+        if (base_sum == maa_sum && compare_arrays(base_out, maa_out, n)) {
             std::cout << "indir_ld_rep benchmark outputs match" << std::endl;
         }
     }

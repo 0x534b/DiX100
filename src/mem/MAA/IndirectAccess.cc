@@ -498,6 +498,7 @@ void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool 
                     break;
                 }
             } else {
+                has_remaining_reps = false;
                 needDrain = true;
                 break;
             }
@@ -515,6 +516,8 @@ void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool 
         uint32_t element_cond = maa->spd->getData<uint32_t>(my_cond_tile, my_i);
         uint32_t idx = maa->spd->getData<uint32_t>(my_idx_tile, my_i);
 
+        assert((int)idx != -1);
+
         if ((my_cond_tile == -1 || element_cond != 0) && (int)idx != -1) {
             num_spd_read_condidx_accesses++;
             Addr vaddr = my_base_addr + my_word_size * idx;
@@ -530,6 +533,7 @@ void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool 
                 if (new_count > 0) {
                     has_remaining_reps = true;
                 }
+                // warn("my_i %d, idx %d with %d remaining reps", my_i, idx, new_count);
             }
 
             panic_if(vaddr < my_min_addr || vaddr >= my_max_addr, "I[%d] %s: vaddr 0x%lx out of range [0x%lx, 0x%lx)!\n", my_indirect_id, __func__, vaddr, my_min_addr, my_max_addr);
@@ -595,7 +599,7 @@ void IndirectAccessUnit::executeInstruction() {
 
         // set destination to source
         if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_REP) {
-            my_dst_tile = my_src_tile;
+            my_dst_tile = my_idx_tile;
             last_drain_idx = 0;
         }
 
@@ -640,6 +644,7 @@ void IndirectAccessUnit::executeInstruction() {
         my_cond_tile_ready = (my_cond_tile == -1) ? true : false;
         my_idx_tile_ready = false;
         my_src_tile_ready = (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD || my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_REP || my_instruction->opcode == Instruction::OpcodeType::INDIR_ST_SCALAR || my_instruction->opcode == Instruction::OpcodeType::INDIR_RMW_SCALAR) ? true : false;
+        has_remaining_reps = true;
         my_RT_config = getRowTableConfig(my_base_addr);
 
         // Initialization
@@ -810,11 +815,17 @@ void IndirectAccessUnit::executeInstruction() {
             break;
         }
         if (my_fill_finished == false) {
-            bool finished, waitForFinish, waitForElement, needDrain;
-            int num_spd_read_condidx_accesses, num_rowtable_accesses;
-            fillRowTable(finished, waitForFinish, waitForElement, needDrain, num_spd_read_condidx_accesses, num_rowtable_accesses);
-            // Row table parallelism = total #sub-banks. Each bank can be inserted once at a cycle
-            updateLatency(0, num_spd_read_condidx_accesses, 0, 0, num_rowtable_accesses, total_num_RT_subslices);
+            if ((maa->allIndirectPacketsSent(my_indirect_id) && my_received_responses == my_expected_responses) || my_instruction->opcode != Instruction::OpcodeType::INDIR_LD_REP) {
+                bool finished, waitForFinish, waitForElement, needDrain;
+                int num_spd_read_condidx_accesses, num_rowtable_accesses;
+                fillRowTable(finished, waitForFinish, waitForElement, needDrain, num_spd_read_condidx_accesses, num_rowtable_accesses);
+                // Row table parallelism = total #sub-banks. Each bank can be inserted once at a cycle
+                updateLatency(0, num_spd_read_condidx_accesses, 0, 0, num_rowtable_accesses, total_num_RT_subslices);
+            } else {
+                DPRINTF(MAAIndirect, "I[%d] %s: waiting for %d outstanding responses before refilling %s!\n",
+                        my_indirect_id, __func__, my_expected_responses - my_received_responses,
+                        my_instruction->print());
+            }
         }
         break;
     }
@@ -967,9 +978,11 @@ bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_blo
         DPRINTF(MAAIndirect, "I[%d] %s: itr (%d) wid (%d) matched!\n", my_indirect_id, __func__, itr, wid);
         if (my_dst_tile != -1) {
             if (my_word_size == 4) {
+                // warn("writing 32 bit: %d, %d, %d", my_dst_tile, itr, dataptr_u32_typed[wid]);
                 maa->spd->setData<uint32_t>(my_dst_tile, itr, dataptr_u32_typed[wid]);
                 DPRINTF(MAAIndirect, "I[%d] %s: SPD[%d][%d] = %u/%d/%f!\n", my_indirect_id, __func__, my_dst_tile, itr, ((uint32_t *)new_data)[wid], ((int32_t *)new_data)[wid], ((float *)new_data)[wid]);
             } else {
+                // warn("writing 64 bit: %d, %d, %lu", my_dst_tile, itr, dataptr_u64_typed[wid]);
                 maa->spd->setData<uint64_t>(my_dst_tile, itr, dataptr_u64_typed[wid]);
                 DPRINTF(MAAIndirect, "I[%d] %s: SPD[%d][%d] = %lu/%ld/%lf!\n", my_indirect_id, __func__, my_dst_tile, itr, ((uint64_t *)new_data)[wid], ((int64_t *)new_data)[wid], ((double *)new_data)[wid]);
             }
