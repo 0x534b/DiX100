@@ -601,7 +601,7 @@ inline void maa_indirect_load_rep(T1 *data, int idx_tile, int dst_tile, int cond
         uint32_t repeats = repeat_counts[idx];
         while (repeats > 0) {
             indices[idx] = data[indices[idx]];
-            assert(check_region(region, current_ptr));
+            assert(check_region(region, data + indices[idx]));
             // value = *current_ptr;
             // current_addr = static_cast<uint64_t>(value);
             repeats--;
